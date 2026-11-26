@@ -1,0 +1,10 @@
+[package]
+name = "fast-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fast-http = { path = "../fast-http" }
+fast-extract = { path = "../fast-extract" }
+httparse = { workspace = true }
+tokio = { workspace = true }

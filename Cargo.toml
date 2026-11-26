@@ -1,0 +1,29 @@
+[workspace]
+members = [
+    "crates/fast-http",
+    "crates/fast-extract",
+    "crates/fast-macros",
+    "crates/fast-core",
+    "examples/demo_api",
+]
+resolver = "2"
+
+[workspace.dependencies]
+httparse = "1"
+proc-macro2 = "1"
+quote = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+
+[package]
+name = "fast-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fast-http = { path = "crates/fast-http" }
+fast-extract = { path = "crates/fast-extract" }
+fast-macros = { path = "crates/fast-macros" }
+fast-core = { path = "crates/fast-core" }
