@@ -1,3 +1,5 @@
+//! Request extractors, response conversions, and type-erased async handler traits.
+
 pub mod extract;
 pub mod handler;
 

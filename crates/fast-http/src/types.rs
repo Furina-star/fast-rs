@@ -1,3 +1,5 @@
+//! Core HTTP types: Method, StatusCode, Request with typed state, and Response.
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
@@ -18,6 +20,7 @@ pub enum Method {
 }
 
 impl Method {
+    // Returns the uppercase HTTP method string slice.
     pub fn as_str(&self) -> &'static str {
         match self {
             Method::Get => "GET",
@@ -33,6 +36,7 @@ impl Method {
 impl FromStr for Method {
     type Err = String;
 
+    // Parses a method string case-insensitively using ASCII uppercasing.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().as_str() {
             "GET" => Ok(Method::Get),
@@ -47,6 +51,7 @@ impl FromStr for Method {
 }
 
 impl fmt::Display for Method {
+    // Writes the uppercase HTTP method name to the formatter.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -68,10 +73,12 @@ pub enum StatusCode {
 }
 
 impl StatusCode {
+    // Converts the status code enum into its numeric u16 value.
     pub fn as_u16(self) -> u16 {
         self as u16
     }
 
+    // Returns the standard HTTP reason phrase for this status code.
     pub fn reason_phrase(self) -> &'static str {
         match self {
             StatusCode::Ok => "OK",
@@ -100,6 +107,7 @@ pub struct Request {
 }
 
 impl Request {
+    // Creates an empty Request for the given HTTP method and path.
     pub fn new(method: Method, path: impl Into<String>) -> Self {
         Self {
             method,
@@ -112,10 +120,12 @@ impl Request {
         }
     }
 
+    // Registers shared state in the extension map keyed by TypeId.
     pub fn insert_state<T: Send + Sync + 'static>(&mut self, value: Arc<T>) {
         self.extensions.insert(TypeId::of::<T>(), value);
     }
 
+    // Looks up shared state by TypeId and downcasts Arc<dyn Any> back to Arc<T>.
     pub fn get_state<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
         self.extensions
             .get(&TypeId::of::<T>())
@@ -131,6 +141,7 @@ pub struct Response {
 }
 
 impl Response {
+    // Constructs a Response with a status code and raw body bytes.
     pub fn new(status: StatusCode, body: impl Into<Vec<u8>>) -> Self {
         Self {
             status,
@@ -139,23 +150,27 @@ impl Response {
         }
     }
 
+    // Builds a plain-text UTF-8 Response with Content-Type set.
     pub fn text(status: StatusCode, body: impl Into<String>) -> Self {
         Self::new(status, body.into().into_bytes())
             .with_header("Content-Type", "text/plain; charset=utf-8")
     }
 
+    // Serializes a value into a JSON Response with Content-Type set.
     pub fn json<T: Serialize>(status: StatusCode, value: &T) -> Result<Self, serde_json::Error> {
         let bytes = serde_json::to_vec(value)?;
         Ok(Self::new(status, bytes).with_header("Content-Type", "application/json"))
     }
 
+    // Inserts or overrides a response header using builder chaining.
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
     }
 
-    /// Serializes this response into raw HTTP/1.1 bytes for fast-core to write to TCP.
+    // Serializes status line, headers, and body into raw HTTP/1.1 wire bytes.
     pub fn to_http_bytes(&self) -> Vec<u8> {
+        // Write HTTP/1.1 status line plus Content-Length and Connection: close framing.
         let mut head = format!(
             "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
             self.status.as_u16(),
@@ -165,6 +180,7 @@ impl Response {
         for (k, v) in &self.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
+        // Separate headers from body with CRLF before appending raw body bytes.
         head.push_str("\r\n");
 
         let mut bytes = head.into_bytes();

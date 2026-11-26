@@ -1,8 +1,12 @@
+<div align="center">
+
 # fast-rs
 
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)
 ![Runtime](https://img.shields.io/badge/Async-Tokio-blue)
 ![Inspired By](https://img.shields.io/badge/Inspired%20By-FastAPI-009688?logo=fastapi)
+
+</div>
 
 A compile-time, FastAPI-inspired async web micro-framework built in Rust.
 

@@ -1,1 +1,1 @@
-// Attribute procedural macros (#[get], #[post], #[delete]) go here.
+//! Procedural attribute route macros (#[get], #[post], #[delete]) mirroring FastAPI decorators.

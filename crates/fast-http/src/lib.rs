@@ -1,3 +1,5 @@
+//! Core HTTP primitives, structured ApiError types, and /docs route metadata.
+
 pub mod docs;
 pub mod error;
 pub mod types;
