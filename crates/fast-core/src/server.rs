@@ -13,6 +13,7 @@ use crate::parser::{parse_request, MAX_REQUEST_BYTES};
 use crate::router::App;
 
 const READ_DEADLINE: Duration = Duration::from_secs(10);
+const CLOSE_DRAIN_DEADLINE: Duration = Duration::from_millis(250);
 
 impl App {
     /// Listens for HTTP requests and dispatches them on concurrent connection tasks.
@@ -55,7 +56,18 @@ async fn handle_connection(mut stream: TcpStream, app: Arc<App>) -> io::Result<(
         }
     };
     stream.write_all(&response.to_http_bytes()).await?;
-    stream.shutdown().await
+    stream.shutdown().await?;
+
+    // A reset caused by unread input can hide the response from the client.
+    let _ = timeout(
+        CLOSE_DRAIN_DEADLINE,
+        tokio::io::copy(
+            &mut stream.take(MAX_REQUEST_BYTES as u64),
+            &mut tokio::io::sink(),
+        ),
+    )
+    .await;
+    Ok(())
 }
 
 async fn read_request(stream: &mut TcpStream) -> io::Result<Result<Option<Request>, ApiError>> {
@@ -162,6 +174,30 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(response.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+    }
+
+    #[tokio::test]
+    async fn early_rejection_returns_400_with_unread_input() {
+        let response = timeout(Duration::from_secs(5), async {
+            let (mut client, server) = connection_pair().await?;
+            let mut request =
+                b"POST /tasks HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\n\r\n"
+                    .to_vec();
+            request.resize(32 * 1024, b'a');
+            client.write_all(&request).await?;
+
+            let connection = tokio::spawn(handle_connection(server, Arc::new(App::new())));
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await?;
+            client.shutdown().await?;
+            connection.await.unwrap()?;
+            Ok::<_, io::Error>(response)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+        assert!(response.ends_with(b"{\"detail\":\"Request body exceeds size limit\"}"));
     }
 
     #[tokio::test]
