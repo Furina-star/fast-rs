@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fast_extract::BoxedHandler;
-use fast_http::{ApiError, Request, Response, RouteMeta};
+use fast_http::docs::{build_docs_response, build_swagger_html};
+use fast_http::{ApiError, Method, Request, Response, RouteMeta};
 
 struct Route {
     meta: RouteMeta,
@@ -34,6 +35,26 @@ impl App {
     }
 
     pub async fn dispatch(&self, mut req: Request) -> Response {
+        if req.method == Method::Get {
+            match req.path.as_str() {
+                "/docs" => return build_swagger_html(),
+                "/openapi.json" => {
+                    let metadata = self
+                        .routes
+                        .iter()
+                        .map(|route| &route.meta)
+                        .filter(|meta| {
+                            meta.method != Method::Get
+                                || !matches!(meta.path.as_str(), "/docs" | "/openapi.json")
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    return build_docs_response(&metadata);
+                }
+                _ => {}
+            }
+        }
+
         let routes = self
             .routes
             .iter()
@@ -120,6 +141,46 @@ mod tests {
             },
             handler,
         );
+    }
+
+    #[tokio::test]
+    async fn built_in_docs_use_registered_metadata() {
+        let mut app = App::new();
+        for path in ["/tasks/{id}", "/docs", "/openapi.json"] {
+            get(
+                &mut app,
+                path,
+                into_boxed_handler(|| async { "user route" }),
+            );
+        }
+
+        let docs = app.dispatch(Request::new(Method::Get, "/docs")).await;
+        assert_eq!(docs.status, StatusCode::Ok);
+        assert!(docs.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("content-type") && value.starts_with("text/html")
+        }));
+        assert!(String::from_utf8(docs.body)
+            .unwrap()
+            .contains("/openapi.json"));
+
+        let schema = app
+            .dispatch(Request::new(Method::Get, "/openapi.json"))
+            .await;
+        assert_eq!(schema.status, StatusCode::Ok);
+        assert!(schema.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("content-type") && value.starts_with("application/json")
+        }));
+        let body = String::from_utf8(schema.body).unwrap();
+        let openapi = body.split_once("\"openapi\"").unwrap().1;
+        assert!(openapi
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap()
+            .trim_start()
+            .starts_with("\"3.0."));
+        assert!(body.contains("\"/tasks/{id}\""));
+        assert!(!body.contains("\"/docs\""));
+        assert!(!body.contains("\"/openapi.json\""));
     }
 
     #[tokio::test]
