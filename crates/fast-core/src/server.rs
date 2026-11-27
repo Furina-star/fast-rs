@@ -1,5 +1,6 @@
 //! Async Tokio TCP server and connection dispatch loop.
 
+use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,13 +8,66 @@ use std::time::{Duration, Instant};
 use fast_http::{ApiError, Request};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::parser::{parse_request, MAX_REQUEST_BYTES};
 use crate::router::App;
 
 const READ_DEADLINE: Duration = Duration::from_secs(10);
 const CLOSE_DRAIN_DEADLINE: Duration = Duration::from_millis(250);
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+// Stable ErrorKind does not expose socket descriptor or buffer exhaustion.
+const ACCEPT_RESOURCE_ERRORS: &[i32] = &[
+    #[cfg(windows)]
+    10024, // WSAEMFILE
+    #[cfg(windows)]
+    10055, // WSAENOBUFS
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        not(any(
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6",
+            target_arch = "sparc",
+            target_arch = "sparc64"
+        ))
+    ))]
+    105, // ENOBUFS
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6"
+        )
+    ))]
+    132, // ENOBUFS
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        all(
+            target_os = "linux",
+            any(target_arch = "sparc", target_arch = "sparc64")
+        )
+    ))]
+    55, // ENOBUFS
+    #[cfg(all(
+        unix,
+        not(any(target_os = "haiku", target_os = "hurd", target_os = "emscripten"))
+    ))]
+    23, // ENFILE
+    #[cfg(all(
+        unix,
+        not(any(target_os = "haiku", target_os = "hurd", target_os = "emscripten"))
+    ))]
+    24, // EMFILE
+];
 
 impl App {
     /// Listens for HTTP requests and dispatches them on concurrent connection tasks.
@@ -25,13 +79,38 @@ impl App {
 
 async fn serve(listener: TcpListener, app: Arc<App>) -> io::Result<()> {
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer) = accept_connection(|| listener.accept()).await?;
         let app = Arc::clone(&app);
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, app).await {
                 eprintln!("Connection {peer}: {error}");
             }
         });
+    }
+}
+
+async fn accept_connection<T, F>(mut accept: impl FnMut() -> F) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    loop {
+        let error = match accept().await {
+            Ok(connection) => return Ok(connection),
+            Err(error) => error,
+        };
+        match error.kind() {
+            io::ErrorKind::Interrupted
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset => tokio::task::yield_now().await,
+            kind if kind == io::ErrorKind::OutOfMemory
+                || error
+                    .raw_os_error()
+                    .is_some_and(|code| ACCEPT_RESOURCE_ERRORS.contains(&code)) =>
+            {
+                sleep(ACCEPT_RETRY_DELAY).await;
+            }
+            _ => return Err(error),
+        }
     }
 }
 
@@ -96,8 +175,10 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Result<Option<Reques
 
 #[cfg(test)]
 mod tests {
+    use std::future::{poll_fn, ready, Future};
     use std::io;
     use std::sync::Arc;
+    use std::task::Poll;
     use std::time::Duration;
 
     use fast_http::{Method, Response, RouteMeta, StatusCode};
@@ -105,8 +186,64 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::timeout;
 
-    use super::{handle_connection, serve};
+    use super::{accept_connection, handle_connection, serve};
     use crate::router::App;
+
+    #[tokio::test]
+    async fn accept_retries_transient_connection_errors() {
+        let mut outcomes = [
+            Err(io::ErrorKind::Interrupted.into()),
+            Err(io::ErrorKind::ConnectionAborted.into()),
+            Err(io::ErrorKind::ConnectionReset.into()),
+            Ok(42),
+        ]
+        .into_iter();
+
+        assert_eq!(
+            accept_connection(|| ready(outcomes.next().unwrap()))
+                .await
+                .unwrap(),
+            42
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_waits_before_retrying_resource_exhaustion() {
+        let mut errors = vec![io::ErrorKind::OutOfMemory.into()];
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "android",
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        errors.extend([23, 24].map(io::Error::from_raw_os_error));
+        #[cfg(windows)]
+        errors.extend([10024, 10055].map(io::Error::from_raw_os_error));
+
+        for error in errors {
+            let mut outcomes = [Err(error), Ok(42)].into_iter();
+            let mut accepting =
+                std::pin::pin!(accept_connection(|| ready(outcomes.next().unwrap())));
+            poll_fn(|cx| {
+                assert!(accepting.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(accepting.await.unwrap(), 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_propagates_fatal_errors() {
+        let mut outcome = Some(Err::<(), _>(io::ErrorKind::InvalidInput.into()));
+        let error = accept_connection(|| ready(outcome.take().unwrap()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[tokio::test]
     async fn fragmented_request_and_concurrent_client_complete() {
