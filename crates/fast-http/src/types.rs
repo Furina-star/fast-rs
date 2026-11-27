@@ -131,6 +131,14 @@ impl Request {
             .get(&TypeId::of::<T>())
             .and_then(|val| Arc::clone(val).downcast::<T>().ok())
     }
+
+    // Looks up an HTTP header without caring about uppercase or lowercase
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -187,4 +195,38 @@ impl Response {
         bytes.extend_from_slice(&self.body);
         bytes
     }
+
+    // Builds an HTTP response containing an HTML webpage (used for SwaggerUI).
+    pub fn html(status: StatusCode, body: impl Into<String>) -> Self {
+        Self::new(status, body.into().into_bytes())
+            .with_header("Content-Type", "text/html; charset=utf-8")
+    }
+
+    // Adds CORS headers so browsers allow Swagger UI or frontends to cal this API.
+    pub fn with_cors(self) -> Self {
+        self.with_header("Access-Control-Allow-Origin", "*")
+            .with_header(
+                "Access-Control-Allow-Methods",
+                "GET, POST, PUT, DELETE, OPTIONS",
+            )
+            .with_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Authorization",
+            )
+    }
+}
+
+// Parses a URL query string like "?done=true&title=hello%20world" into a HashMap.
+pub fn parse_query_string(raw: &str) -> HashMap<String, String> {
+    raw.trim_start_matches('?')
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            Some((
+                k.replace("%20", " ").replace('+', " "),
+                v.replace("%20", " ").replace('+', " "),
+            ))
+        })
+        .collect()
 }
