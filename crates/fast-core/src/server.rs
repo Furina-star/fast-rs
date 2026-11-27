@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fast_http::{ApiError, Request};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::time::{sleep, timeout};
 
@@ -14,6 +14,7 @@ use crate::parser::{parse_request, MAX_REQUEST_BYTES};
 use crate::router::App;
 
 const READ_DEADLINE: Duration = Duration::from_secs(10);
+const WRITE_DEADLINE: Duration = Duration::from_secs(10);
 const CLOSE_DRAIN_DEADLINE: Duration = Duration::from_millis(250);
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -83,7 +84,10 @@ async fn serve(listener: TcpListener, app: Arc<App>) -> io::Result<()> {
         let app = Arc::clone(&app);
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, app).await {
-                eprintln!("Connection {peer}: {error}");
+                log_line(
+                    io::stderr().lock(),
+                    format_args!("Connection {peer}: {error}"),
+                );
             }
         });
     }
@@ -144,15 +148,18 @@ async fn handle_connection(mut stream: TcpStream, app: Arc<App>) -> io::Result<(
             let method = request.method;
             let path = request.path.escape_debug().to_string();
             let response = app.dispatch(request).await;
-            eprintln!(
-                "{method} {path} {} {:.2?}",
-                response.status.as_u16(),
-                started.elapsed()
+            log_line(
+                io::stderr().lock(),
+                format_args!(
+                    "{method} {path} {} {:.2?}",
+                    response.status.as_u16(),
+                    started.elapsed()
+                ),
             );
             response
         }
     };
-    stream.write_all(&response.to_http_bytes()).await?;
+    write_response(&mut stream, &response.to_http_bytes()).await?;
     stream.shutdown().await?;
 
     // A reset caused by unread input can hide the response from the client.
@@ -165,6 +172,16 @@ async fn handle_connection(mut stream: TcpStream, app: Arc<App>) -> io::Result<(
     )
     .await;
     Ok(())
+}
+
+fn log_line(mut sink: impl io::Write, message: std::fmt::Arguments<'_>) {
+    let _ = writeln!(sink, "{message}");
+}
+
+async fn write_response(stream: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> io::Result<()> {
+    timeout(WRITE_DEADLINE, stream.write_all(bytes))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response write timed out"))?
 }
 
 async fn read_request(stream: &mut TcpStream) -> io::Result<Result<Option<Request>, ApiError>> {
@@ -204,8 +221,53 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::timeout;
 
-    use super::{accept_connection, handle_connection, serve};
+    use super::{accept_connection, handle_connection, log_line, serve, write_response};
     use crate::router::App;
+
+    #[tokio::test]
+    async fn stalled_response_returns_timed_out_error() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let started = tokio::time::Instant::now();
+        let error = timeout(Duration::from_secs(12), write_response(&mut writer, b"ok"))
+            .await
+            .expect("response write did not finish by its deadline")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() >= Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn response_write_preserves_io_error() {
+        let (mut writer, reader) = tokio::io::duplex(1);
+        drop(reader);
+
+        let error = write_response(&mut writer, b"ok").await.unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn logging_continues_after_sink_rejects_write() {
+        #[derive(Default)]
+        struct RejectingWriter(bool);
+
+        impl io::Write for RejectingWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                self.0 = true;
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = RejectingWriter::default();
+        log_line(&mut writer, format_args!("test message"));
+
+        assert!(writer.0);
+    }
 
     #[tokio::test]
     async fn accept_retries_transient_connection_errors() {
