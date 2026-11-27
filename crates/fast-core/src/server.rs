@@ -102,6 +102,24 @@ where
             io::ErrorKind::Interrupted
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::ConnectionReset => tokio::task::yield_now().await,
+            // Linux accept(2) can report pending TCP errors from the new socket.
+            #[cfg(target_os = "linux")]
+            _ if matches!(
+                error.raw_os_error(),
+                Some(
+                    libc::ENETDOWN
+                        | libc::EPROTO
+                        | libc::ENOPROTOOPT
+                        | libc::EHOSTDOWN
+                        | libc::ENONET
+                        | libc::EHOSTUNREACH
+                        | libc::EOPNOTSUPP
+                        | libc::ENETUNREACH
+                )
+            ) =>
+            {
+                tokio::task::yield_now().await;
+            }
             kind if kind == io::ErrorKind::OutOfMemory
                 || error
                     .raw_os_error()
@@ -205,6 +223,30 @@ mod tests {
                 .unwrap(),
             42
         );
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn accept_retries_linux_pending_network_errors() {
+        for code in [
+            libc::EPROTO,
+            libc::ENETDOWN,
+            libc::ENOPROTOOPT,
+            libc::EHOSTDOWN,
+            libc::ENONET,
+            libc::EHOSTUNREACH,
+            libc::EOPNOTSUPP,
+            libc::ENETUNREACH,
+        ] {
+            let mut outcomes = [Err(io::Error::from_raw_os_error(code)), Ok(42)].into_iter();
+
+            assert_eq!(
+                accept_connection(|| ready(outcomes.next().unwrap()))
+                    .await
+                    .unwrap(),
+                42
+            );
+        }
     }
 
     #[tokio::test]
