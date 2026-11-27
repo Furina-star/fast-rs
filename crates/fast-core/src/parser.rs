@@ -1,6 +1,7 @@
 //! Zero-copy HTTP/1.1 request parser built on httparse over raw TCP buffers.
 use std::str;
 
+use fast_http::types::parse_query_string;
 use fast_http::{ApiError, Method, Request};
 
 const MAX_HEAD_BYTES: usize = 8 * 1024;
@@ -23,13 +24,7 @@ pub(crate) fn parse_request(buf: &[u8]) -> Result<Option<Request>, ApiError> {
     };
 
     let mut request = Request::new(parsed.method, parsed.path);
-    // shortcut: decode %20 locally until fast-http exposes its query helper.
-    request.query = parsed
-        .query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (key.replace("%20", " "), value.replace("%20", " ")))
-        .collect();
+    request.query = parse_query_string(parsed.query);
     for header in parsed.headers {
         let value =
             str::from_utf8(header.value).map_err(|_| bad_request("Invalid header value"))?;
