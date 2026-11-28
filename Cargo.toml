@@ -27,3 +27,8 @@ fast-http = { path = "crates/fast-http" }
 fast-extract = { path = "crates/fast-extract" }
 fast-macros = { path = "crates/fast-macros" }
 fast-core = { path = "crates/fast-core" }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
