@@ -1,6 +1,6 @@
 //! Slice-based route matcher extracting path parameters and injecting shared state.
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use fast_extract::BoxedHandler;
@@ -38,19 +38,7 @@ impl App {
         if req.method == Method::Get {
             match req.path.as_str() {
                 "/docs" => return build_swagger_html(),
-                "/openapi.json" => {
-                    let metadata = self
-                        .routes
-                        .iter()
-                        .map(|route| &route.meta)
-                        .filter(|meta| {
-                            meta.method != Method::Get
-                                || !matches!(meta.path.as_str(), "/docs" | "/openapi.json")
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    return build_docs_response(&metadata);
-                }
+                "/openapi.json" => return build_docs_response(&self.documented_routes()),
                 _ => {}
             }
         }
@@ -98,6 +86,34 @@ impl App {
                 .map(|(&key, value)| (key, Arc::clone(value))),
         );
         (route.handler)(req).await
+    }
+
+    fn documented_routes(&self) -> Vec<RouteMeta> {
+        let mut templates = HashMap::new();
+        let mut seen = HashSet::new();
+        let mut metadata = Vec::new();
+        for route in &self.routes {
+            let meta = &route.meta;
+            if meta.method == Method::Get && matches!(meta.path.as_str(), "/docs" | "/openapi.json")
+            {
+                continue;
+            }
+            // Equivalent templates share one OpenAPI path and its parameter names.
+            let shape: Vec<_> = meta
+                .path
+                .split('/')
+                .map(|segment| parameter_name(segment).is_none().then_some(segment))
+                .collect();
+            let path = *templates.entry(shape).or_insert(meta.path.as_str());
+            if seen.insert((meta.method, path)) {
+                metadata.push(RouteMeta {
+                    path: path.to_owned(),
+                    method: meta.method,
+                    handler_name: meta.handler_name.clone(),
+                });
+            }
+        }
+        metadata
     }
 }
 
@@ -181,6 +197,41 @@ mod tests {
         assert!(body.contains("\"/tasks/{id}\""));
         assert!(!body.contains("\"/docs\""));
         assert!(!body.contains("\"/openapi.json\""));
+    }
+
+    #[tokio::test]
+    async fn openapi_uses_first_registered_handler_for_each_method_and_path() {
+        let mut app = App::new();
+        for (method, path, name) in [
+            (Method::Get, "/tasks/{id}", "first_handler"),
+            (Method::Get, "/tasks/{id}", "duplicate_handler"),
+            (Method::Get, "/tasks/{slug}", "shadowed_handler"),
+            (Method::Post, "/tasks/{slug}", "post_handler"),
+        ] {
+            app.route(
+                RouteMeta {
+                    method,
+                    path: path.into(),
+                    handler_name: name.into(),
+                },
+                into_boxed_handler(move || async move { name }),
+            );
+        }
+
+        let response = app.dispatch(Request::new(Method::Get, "/tasks/42")).await;
+        assert_eq!(response.body, b"first_handler");
+
+        let schema = app
+            .dispatch(Request::new(Method::Get, "/openapi.json"))
+            .await;
+        assert_eq!(schema.status, StatusCode::Ok);
+        let body = String::from_utf8(schema.body).unwrap();
+        assert!(body.contains("\"first_handler\""));
+        assert!(body.contains("\"post_handler\""));
+        assert!(!body.contains("\"duplicate_handler\""));
+        assert!(!body.contains("\"shadowed_handler\""));
+        assert!(body.contains("\"/tasks/{id}\""));
+        assert!(!body.contains("slug"));
     }
 
     #[tokio::test]
