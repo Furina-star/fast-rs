@@ -9,5 +9,5 @@ fast-extract = { path = "../fast-extract" }
 httparse = { workspace = true }
 tokio = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"

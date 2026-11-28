@@ -24,50 +24,36 @@ const ACCEPT_RESOURCE_ERRORS: &[i32] = &[
     10024, // WSAEMFILE
     #[cfg(windows)]
     10055, // WSAENOBUFS
-    #[cfg(all(
-        any(target_os = "linux", target_os = "android"),
-        not(any(
-            target_arch = "mips",
-            target_arch = "mips64",
-            target_arch = "mips32r6",
-            target_arch = "mips64r6",
-            target_arch = "sparc",
-            target_arch = "sparc64"
-        ))
-    ))]
-    105, // ENOBUFS
-    #[cfg(all(
-        target_os = "linux",
-        any(
-            target_arch = "mips",
-            target_arch = "mips64",
-            target_arch = "mips32r6",
-            target_arch = "mips64r6"
-        )
-    ))]
-    132, // ENOBUFS
     #[cfg(any(
+        target_os = "linux",
         target_vendor = "apple",
         target_os = "freebsd",
         target_os = "dragonfly",
         target_os = "netbsd",
         target_os = "openbsd",
         all(
-            target_os = "linux",
-            any(target_arch = "sparc", target_arch = "sparc64")
+            target_os = "android",
+            not(any(
+                target_arch = "mips",
+                target_arch = "mips64",
+                target_arch = "mips32r6",
+                target_arch = "mips64r6",
+                target_arch = "sparc",
+                target_arch = "sparc64"
+            ))
         )
     ))]
-    55, // ENOBUFS
+    libc::ENOBUFS,
     #[cfg(all(
         unix,
         not(any(target_os = "haiku", target_os = "hurd", target_os = "emscripten"))
     ))]
-    23, // ENFILE
+    libc::ENFILE,
     #[cfg(all(
         unix,
         not(any(target_os = "haiku", target_os = "hurd", target_os = "emscripten"))
     ))]
-    24, // EMFILE
+    libc::EMFILE,
 ];
 
 impl App {
@@ -219,7 +205,7 @@ mod tests {
     use fast_http::{Method, Response, RouteMeta, StatusCode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::time::timeout;
+    use tokio::time::{timeout, Instant};
 
     use super::{accept_connection, handle_connection, log_line, serve, write_response};
     use crate::router::App;
@@ -323,12 +309,13 @@ mod tests {
             target_os = "netbsd",
             target_os = "openbsd"
         ))]
-        errors.extend([23, 24].map(io::Error::from_raw_os_error));
+        errors.extend([libc::ENFILE, libc::EMFILE].map(io::Error::from_raw_os_error));
         #[cfg(windows)]
         errors.extend([10024, 10055].map(io::Error::from_raw_os_error));
 
         for error in errors {
             let mut outcomes = [Err(error), Ok(42)].into_iter();
+            let started = Instant::now();
             let mut accepting =
                 std::pin::pin!(accept_connection(|| ready(outcomes.next().unwrap())));
             poll_fn(|cx| {
@@ -337,6 +324,7 @@ mod tests {
             })
             .await;
             assert_eq!(accepting.await.unwrap(), 42);
+            assert!(started.elapsed() >= Duration::from_millis(100));
         }
     }
 
