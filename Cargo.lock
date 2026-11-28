@@ -46,6 +46,7 @@ dependencies = [
  "fast-extract",
  "fast-http",
  "httparse",
+ "libc",
  "tokio",
 ]
 

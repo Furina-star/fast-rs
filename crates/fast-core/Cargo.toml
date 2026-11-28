@@ -8,3 +8,6 @@ fast-http = { path = "../fast-http" }
 fast-extract = { path = "../fast-extract" }
 httparse = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
