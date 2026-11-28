@@ -21,12 +21,15 @@ tokio = { version = "1", features = ["full"] }
 name = "fast-rs"
 version = "0.1.0"
 edition = "2021"
+description = "A compile-time, FastAPI-inspired async web micro-framework built in Rust."
+license = "MIT"
+repository = "[https://github.com/Furina-star/fast-rs](https://github.com/Furina-star/fast-rs)"
 
 [dependencies]
 fast-http = { path = "crates/fast-http" }
 fast-extract = { path = "crates/fast-extract" }
 fast-macros = { path = "crates/fast-macros" }
-fast-core = { path = "crates/fast-core" }
+fast-core = { path = "crates/fast-core" 
 
 [dev-dependencies]
 serde = { workspace = true }
