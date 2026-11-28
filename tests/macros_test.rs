@@ -122,3 +122,37 @@ async fn delete_macro_builds_route_meta() {
     let res = (route.handler)(req).await;
     assert_eq!(res.status, StatusCode::NoContent);
 }
+
+// Verifies all four crates work end-to-end through App::register and App::dispatch.
+#[tokio::test]
+async fn app_registers_macro_routes_and_dispatches_end_to_end() {
+    let mut app = App::new();
+    app.insert_state(Arc::new(AppConfig {
+        prefix: "TODO".into(),
+    }))
+    .register(ping())
+    .register(get_task())
+    .register(create_task());
+
+    let get_res = app.dispatch(Request::new(Method::Get, "/tasks/42")).await;
+    assert_eq!(get_res.status, StatusCode::Ok);
+    assert!(String::from_utf8(get_res.body)
+        .unwrap()
+        .contains("Task #42"));
+
+    let mut post_req = Request::new(Method::Post, "/tasks");
+    post_req.body = br#"{"title":"Wire all crates"}"#.to_vec();
+    let post_res = app.dispatch(post_req).await;
+    assert_eq!(post_res.status, StatusCode::Created);
+    assert!(String::from_utf8(post_res.body)
+        .unwrap()
+        .contains("TODO: Wire all crates"));
+
+    let docs_res = app
+        .dispatch(Request::new(Method::Get, "/openapi.json"))
+        .await;
+    assert_eq!(docs_res.status, StatusCode::Ok);
+    let docs_body = String::from_utf8(docs_res.body).unwrap();
+    assert!(docs_body.contains("\"/tasks/{id}\""));
+    assert!(docs_body.contains("\"create_task\""));
+}

@@ -6,12 +6,14 @@ pub use fast_http as http;
 pub use fast_macros as macros;
 
 // Top-level re-exports required by generated #[get], #[post], and #[delete] code.
+pub use fast_core::App;
 pub use fast_extract::Route;
 pub use fast_http::Method;
 pub use fast_macros::{delete, get, post};
 
 // Common traits, extractors, macros, and HTTP types for ergonomic imports.
 pub mod prelude {
+    pub use fast_core::App;
     pub use fast_extract::{
         into_boxed_handler, BoxFuture, BoxedHandler, FromRequest, Handler, IntoResponse, Json,
         Path, Route, State,
