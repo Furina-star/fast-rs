@@ -84,6 +84,9 @@ dependencies = [
  "fast-extract",
  "fast-http",
  "fast-macros",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
