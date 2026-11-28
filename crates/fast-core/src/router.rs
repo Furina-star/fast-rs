@@ -29,6 +29,12 @@ impl App {
         self
     }
 
+    // Registers a macro-generated fast_extract::Route onto the application.
+    pub fn register(&mut self, route: fast_extract::Route) -> &mut Self {
+        let meta = route.meta();
+        self.route(meta, route.handler)
+    }
+
     pub fn insert_state<T: Send + Sync + 'static>(&mut self, value: Arc<T>) -> &mut Self {
         self.state.insert(TypeId::of::<T>(), value);
         self
